@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Babylon.js Dynamic USD Payload Demo</title>
+    <style>
+        html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+        #renderCanvas { width: 100vw; height: 90vh; display: block; }
+        #controls { margin: 10px; }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <button onclick="updateACStatus('baseScene')">Load Base Scene</button>
+        <button onclick="updateACStatus('cube')">Load Cube</button>
+    </div>
+    <canvas id="renderCanvas"></canvas>
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+    <script>
+        const canvas = document.getElementById('renderCanvas');
+        const engine = new BABYLON.Engine(canvas, true);
+        let scene;
+
+        async function createScene() {
+            scene = new BABYLON.Scene(engine);
+            const camera = new BABYLON.ArcRotateCamera("Camera", Math.PI / 2, Math.PI / 2.5, 10, BABYLON.Vector3.Zero(), scene);
+            camera.attachControl(canvas, true);
+            const light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
+
+            // Load baseScene.usd at startup
+            try {
+                BABYLON.SceneLoader.Append("Scenes/", "baseScene.glb", scene, () => {
+                    console.log("Loaded baseScene.glb");
+                }, null, (scene, message) => {
+                    console.error("Error loading baseScene.glb:", message);
+                });
+            } catch (err) {
+                console.log("baseScene.glb not found, starting with empty scene");
+            }
+
+            return scene;
+        }
+
+        // Convert USD to GLB before loading, then load GLB dynamically
+        async function updateACStatus(id) {
+            try {
+                // 1. Request device info (get payloadPath)
+                const res = await fetch(`http://localhost:3000/device/${id}`);
+                const data = await res.json();
+                const payloadPathUsd = data.payloadPath; // input usd file
+                const payloadPathGlb = data.payloadPath.replace('.usd', '.glb'); // output glb file
+
+                // 2. Request conversion from USD to GLB
+                const convertRes = await fetch(`http://localhost:3000/convert?input=${payloadPathUsd}&output=${payloadPathGlb}`);
+                const convertData = await convertRes.json();
+
+                if (!convertData.success) {
+                    console.error('Conversion failed:', convertData.error);
+                    return;
+                }
+
+                // 3. Load the converted GLB into scene
+                BABYLON.SceneLoader.Append("Scenes/", payloadPathGlb, scene, () => {
+                    console.log(`Loaded payload: ${payloadPathGlb}`);
+                }, null, (scene, message) => {
+                    console.error(`Error loading payload ${payloadPathGlb}:`, message);
+                });
+
+            } catch (err) {
+                console.error('Error in updateACStatus:', err);
+            }
+        }
+
+        createScene().then(() => {
+            engine.runRenderLoop(() => {
+                if (scene) scene.render();
+            });
+        });
+
+        window.addEventListener('resize', () => {
+            engine.resize();
+        });
+    </script>
+</body>
+</html>
