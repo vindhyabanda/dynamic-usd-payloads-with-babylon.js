@@ -118,7 +118,9 @@ app.get('/convert/gltf', (req, res) => {
 
     // Input is always from Scenes/ folder (USDA files)
     const inputPath = path.join(__dirname, 'Scenes', input);
-    const outputPath = path.join(__dirname, 'Scenes', 'Assets', output);
+    // Force .gltf extension instead of .glb for text format
+    const gltfOutput = output.replace('.glb', '.gltf');
+    const outputPath = path.join(__dirname, 'Scenes', 'Assets', gltfOutput);
 
     console.log(`Converting: ${inputPath} -> ${outputPath}`);
 
@@ -127,14 +129,25 @@ app.get('/convert/gltf', (req, res) => {
         return res.status(404).json({ success: false, error: `Input file not found: ${input}` });
     }
 
-    // Direct USD/USDA to glTF conversion
-    exec(`usd2gltf -i "${inputPath}" -o "${outputPath}"`, (error, stdout, stderr) => {
+    // Direct USD/USDA to glTF conversion (text format for easier JSON manipulation)
+    exec(`usd2gltf -i "${inputPath}" -o "${outputPath}"`, async (error, stdout, stderr) => {
         if (error) {
             console.error(`USD to glTF Conversion error: ${stderr}`);
             return res.status(500).json({ success: false, error: stderr });
         }
         console.log(`USD to glTF Conversion successful: ${stdout}`);
-        res.json({ success: true, outputPath: `Assets/${output}` });
+        
+        try {
+            // Extract customData from original USDA file and inject into glTF
+            await injectCustomDataIntoGltf(inputPath, outputPath);
+            console.log(`Successfully injected customData into glTF file`);
+            
+            res.json({ success: true, outputPath: `Assets/${gltfOutput}` });
+        } catch (injectError) {
+            console.error(`Error injecting customData: ${injectError.message}`);
+            // Still return success since the conversion worked, just log the injection error
+            res.json({ success: true, outputPath: `Assets/${gltfOutput}`, warning: `CustomData injection failed: ${injectError.message}` });
+        }
     });
 });
 
@@ -301,6 +314,188 @@ function startTestDataGenerator() {
         broadcastTelemetryUpdate('sensors/room1/pressure', pressurePayload);
         
     }, 2000); // Every 2 seconds
+}
+
+// Function to extract customData from USDA and inject into glTF extras
+async function injectCustomDataIntoGltf(usdaPath, gltfPath) {
+    const fs = require('fs').promises;
+    
+    console.log(`\n=== CustomData Injection Process ===`);
+    console.log(`Reading USDA file: ${usdaPath}`);
+    
+    // Read the original USDA file
+    const usdaContent = await fs.readFile(usdaPath, 'utf8');
+    console.log(`USDA file size: ${usdaContent.length} characters`);
+    
+    // Extract customData from USDA
+    const customDataMap = extractCustomDataFromUSDA(usdaContent);
+    console.log(`Extracted customData for ${Object.keys(customDataMap).length} objects:`, Object.keys(customDataMap));
+    
+    // Read the generated glTF file
+    console.log(`Reading generated glTF file: ${gltfPath}`);
+    let gltfContent;
+    try {
+        const gltfRaw = await fs.readFile(gltfPath, 'utf8');
+        gltfContent = JSON.parse(gltfRaw);
+        console.log(`glTF file loaded successfully, contains ${gltfContent.nodes?.length || 0} nodes`);
+    } catch (parseError) {
+        throw new Error(`Failed to parse glTF file: ${parseError.message}`);
+    }
+    
+    // Inject customData into glTF extras
+    let injectionsCount = 0;
+    if (gltfContent.nodes) {
+        gltfContent.nodes.forEach((node, index) => {
+            const nodeName = node.name;
+            if (nodeName && customDataMap[nodeName]) {
+                console.log(`  Injecting customData for node "${nodeName}" at index ${index}`);
+                if (!node.extras) {
+                    node.extras = {};
+                }
+                node.extras.customData = customDataMap[nodeName];
+                injectionsCount++;
+                console.log(`    Injected data:`, JSON.stringify(customDataMap[nodeName], null, 2));
+            }
+        });
+    }
+    
+    console.log(`Total customData injections: ${injectionsCount}`);
+    
+    // Save the modified glTF file
+    const modifiedGltfContent = JSON.stringify(gltfContent, null, 2);
+    await fs.writeFile(gltfPath, modifiedGltfContent, 'utf8');
+    console.log(`Modified glTF saved successfully (${modifiedGltfContent.length} characters)`);
+    console.log(`=== CustomData Injection Complete ===\n`);
+}
+
+// Function to parse USDA and extract customData (including layer-level customLayerData)
+function extractCustomDataFromUSDA(usdaContent) {
+    console.log(`\n--- Parsing USDA customData ---`);
+    const customDataMap = {};
+    
+    // First, extract customLayerData (layer-level custom data)
+    const layerDataRegex = /customLayerData\s*=\s*\{([\s\S]*?)\n\s*\}\s*\)/;
+    const layerMatch = layerDataRegex.exec(usdaContent);
+    if (layerMatch) {
+        console.log(`Found customLayerData`);
+        try {
+            const parsedLayerData = parseUSDDictionary(layerMatch[1]);
+            customDataMap['__layerData'] = parsedLayerData;
+            console.log(`Successfully parsed customLayerData:`, JSON.stringify(parsedLayerData, null, 2));
+        } catch (err) {
+            console.warn(`Failed to parse customLayerData: ${err.message}`);
+        }
+    }
+    
+    // Then, extract object-level customData from def blocks
+    const defBlockRegex = /def\s+\w+\s+"([^"]+)"\s*\(\s*customData\s*=\s*\{([\s\S]*?)\n\s*\}\s*\)/g;
+    
+    let match;
+    while ((match = defBlockRegex.exec(usdaContent)) !== null) {
+        const objectName = match[1];
+        const customDataContent = match[2];
+        
+        console.log(`Found customData block for "${objectName}"`);
+        
+        try {
+            const parsedCustomData = parseUSDDictionary(customDataContent);
+            customDataMap[objectName] = parsedCustomData;
+            console.log(`Successfully parsed customData for "${objectName}":`, JSON.stringify(parsedCustomData, null, 2));
+        } catch (parseError) {
+            console.warn(`Failed to parse customData for "${objectName}": ${parseError.message}`);
+        }
+    }
+    
+    console.log(`--- USDA customData parsing complete ---\n`);
+    return customDataMap;
+}
+
+// Improved USD dictionary parser
+function parseUSDDictionary(content) {
+    console.log(`Parsing USD dictionary content (${content.length} chars)`);
+    
+    const result = {};
+    const lines = content.split('\n');
+    let i = 0;
+    
+    while (i < lines.length) {
+        const line = lines[i].trim();
+        if (!line || line.startsWith('#')) {
+            i++;
+            continue;
+        }
+        
+        // Parse string values: string key = "value"
+        const stringMatch = line.match(/^string\s+(\w+)\s*=\s*"([^"]*)"$/);
+        if (stringMatch) {
+            const [, key, value] = stringMatch;
+            result[key] = value;
+            console.log(`  Parsed string: ${key} = "${value}"`);
+            i++;
+            continue;
+        }
+        
+        // Parse float values: float key = 42.0
+        const floatMatch = line.match(/^float\s+(\w+)\s*=\s*([\d.-]+)$/);
+        if (floatMatch) {
+            const [, key, value] = floatMatch;
+            result[key] = parseFloat(value);
+            console.log(`  Parsed float: ${key} = ${value}`);
+            i++;
+            continue;
+        }
+        
+        // Parse dictionary: dictionary key = { ... }
+        const dictStartMatch = line.match(/^dictionary\s+(\w+)\s*=\s*\{$/);
+        if (dictStartMatch) {
+            const [, key] = dictStartMatch;
+            console.log(`  Found dictionary: ${key}`);
+            
+            // Find the matching closing brace
+            let braceCount = 1;
+            let dictContent = '';
+            i++; // Move past the opening line
+            
+            while (i < lines.length && braceCount > 0) {
+                const dictLine = lines[i];
+                
+                // Count braces
+                const openBraces = (dictLine.match(/\{/g) || []).length;
+                const closeBraces = (dictLine.match(/\}/g) || []).length;
+                braceCount += openBraces - closeBraces;
+                
+                if (braceCount > 0) {
+                    dictContent += dictLine + '\n';
+                }
+                i++;
+            }
+            
+            try {
+                result[key] = parseUSDDictionary(dictContent);
+                console.log(`  Successfully parsed dictionary: ${key}`);
+            } catch (err) {
+                console.warn(`  Failed to parse dictionary ${key}: ${err.message}`);
+                result[key] = { _raw: dictContent.trim() };
+            }
+            continue;
+        }
+        
+        // Parse string arrays: string[] key = ["value1", "value2"]
+        const stringArrayMatch = line.match(/^string\[\]\s+(\w+)\s*=\s*\[(.*?)\]$/);
+        if (stringArrayMatch) {
+            const [, key, arrayContent] = stringArrayMatch;
+            const values = arrayContent.split(',').map(v => v.trim().replace(/"/g, ''));
+            result[key] = values;
+            console.log(`  Parsed string array: ${key} = [${values.join(', ')}]`);
+            i++;
+            continue;
+        }
+        
+        console.log(`  Skipping unrecognized line: ${line}`);
+        i++;
+    }
+    
+    return result;
 }
 
 server.listen(PORT, () => {

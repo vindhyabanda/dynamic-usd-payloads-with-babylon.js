@@ -99,8 +99,8 @@
                     }
                 });
                 
-                // Convert USD file to glTF
-                const gltfFilename = selectedFile.replace(/\.(usda|usd)$/, '.glb');
+                // Convert USD file to glTF (text format)
+                const gltfFilename = selectedFile.replace(/\.(usda|usd)$/, '.gltf');
                 console.log(`Converting ${selectedFile} to ${gltfFilename}`);
                 
                 const convertResponse = await fetch(`http://localhost:3000/convert/gltf?input=${selectedFile}&output=${gltfFilename}`);
@@ -112,8 +112,9 @@
                 
                 console.log(`Conversion successful: ${convertData.outputPath}`);
                 
-                // Load the converted glTF file
-                await loadGltfWithExtras(`http://localhost:3000/Scenes/Assets/`, gltfFilename);
+                // Load the converted glTF file (using the filename from server response)
+                const actualFilename = convertData.outputPath.split('/').pop();
+                await loadGltfWithExtras(`http://localhost:3000/Scenes/Assets/`, actualFilename);
                 
             } catch (error) {
                 console.error('Error loading scene:', error);
@@ -123,14 +124,44 @@
 
         // Load glTF and display extras data
         async function loadGltfWithExtras(rootUrl, sceneFilename) {
+            console.log(`Loading glTF file: ${rootUrl}${sceneFilename}`);
+            
+            // First, let's fetch the glTF file directly to see what's in it
+            try {
+                const gltfUrl = `${rootUrl}${sceneFilename}`;
+                console.log(`Fetching glTF content from: ${gltfUrl}`);
+                
+                const response = await fetch(gltfUrl);
+                const gltfContent = await response.json();
+                
+                console.log('=== Raw glTF Content ===');
+                console.log('glTF nodes:', gltfContent.nodes);
+                
+                if (gltfContent.nodes) {
+                    gltfContent.nodes.forEach((node, index) => {
+                        console.log(`Node ${index} (${node.name || 'unnamed'}):`, node);
+                        if (node.extras) {
+                            console.log(`  -> Node ${index} has extras:`, node.extras);
+                        }
+                    });
+                }
+                
+                console.log('=== End Raw glTF Content ===');
+                
+            } catch (fetchError) {
+                console.warn('Could not fetch glTF content directly:', fetchError);
+            }
+            
             return new Promise((resolve, reject) => {
-                BABYLON.SceneLoader.ImportMesh("", rootUrl, sceneFilename, scene, (meshes, particleSystems, skeletons, animationGroups) => {
+                BABYLON.SceneLoader.ImportMesh("", rootUrl, sceneFilename, scene, (meshes, particleSystems, skeletons, animationGroups, transformNodes) => {
                     console.log(`Successfully loaded glTF: ${sceneFilename}`);
+                    console.log(`Loaded ${meshes.length} meshes:`, meshes.map(m => m.name));
+                    console.log(`Loaded ${transformNodes.length} transform nodes:`, transformNodes.map(n => n.name));
                     
-                    // Display extras data from glTF
-                    displayExtrasData(meshes);
+                    // Display extras data from both meshes and nodes
+                    displayExtrasData(meshes, transformNodes);
                     
-                    resolve({ meshes, particleSystems, skeletons, animationGroups });
+                    resolve({ meshes, particleSystems, skeletons, animationGroups, transformNodes });
                 }, null, (scene, message, exception) => {
                     console.error(`Error loading ${sceneFilename}:`, message, exception);
                     reject(new Error(message));
@@ -138,15 +169,53 @@
             });
         }
 
-        // Display extras data from loaded glTF meshes
-        function displayExtrasData(meshes) {
+        // Display extras data from loaded glTF meshes and nodes
+        function displayExtrasData(meshes, transformNodes = []) {
             const extrasContainer = document.getElementById('extrasData');
             extrasContainer.innerHTML = '<h3>glTF Extras Data:</h3>';
             
             let foundExtras = false;
             
-            meshes.forEach((mesh, index) => {
-                if (mesh.metadata && mesh.metadata.gltf && mesh.metadata.gltf.extras) {
+            // Check all nodes (including transform nodes) for extras data
+            const allNodes = [...transformNodes];
+            
+            // Also add any mesh nodes that have parent information
+            meshes.forEach(mesh => {
+                if (mesh.parent && !allNodes.includes(mesh.parent)) {
+                    allNodes.push(mesh.parent);
+                }
+                allNodes.push(mesh);
+            });
+            
+            console.log(`=== Checking ${allNodes.length} nodes for extras data ===`);
+            
+            allNodes.forEach((node, index) => {
+                console.log(`=== Node ${index}: ${node.name || 'Unnamed'} (${node.constructor.name}) ===`);
+                console.log('Full node metadata:', node.metadata);
+                
+                // Check multiple possible locations for extras data
+                let extrasData = null;
+                let extrasSource = '';
+                
+                // Check various possible paths where Babylon.js might store glTF extras
+                if (node.metadata && node.metadata.gltf && node.metadata.gltf.extras) {
+                    extrasData = node.metadata.gltf.extras;
+                    extrasSource = 'metadata.gltf.extras';
+                } else if (node.metadata && node.metadata.extras) {
+                    extrasData = node.metadata.extras;
+                    extrasSource = 'metadata.extras';
+                } else if (node.metadata && node.metadata.customData) {
+                    extrasData = node.metadata.customData;
+                    extrasSource = 'metadata.customData';
+                } else if (node.metadata && node.metadata._gltf && node.metadata._gltf.extras) {
+                    extrasData = node.metadata._gltf.extras;
+                    extrasSource = 'metadata._gltf.extras';
+                } else if (node.extras) {
+                    extrasData = node.extras;
+                    extrasSource = 'node.extras';
+                }
+                
+                if (extrasData) {
                     foundExtras = true;
                     const extrasDiv = document.createElement('div');
                     extrasDiv.style.marginBottom = '10px';
@@ -155,17 +224,32 @@
                     extrasDiv.style.backgroundColor = '#f9f9f9';
                     
                     extrasDiv.innerHTML = `
-                        <h4>Mesh: ${mesh.name || `Mesh ${index}`}</h4>
-                        <pre>${JSON.stringify(mesh.metadata.gltf.extras, null, 2)}</pre>
+                        <h4>${node.constructor.name}: ${node.name || `Node ${index}`}</h4>
+                        <p><strong>Source:</strong> ${extrasSource}</p>
+                        <pre>${JSON.stringify(extrasData, null, 2)}</pre>
                     `;
                     
                     extrasContainer.appendChild(extrasDiv);
-                    console.log(`Extras for ${mesh.name}:`, mesh.metadata.gltf.extras);
+                    console.log(`Extras found for ${node.name} at ${extrasSource}:`, extrasData);
+                } else {
+                    console.log(`No extras data found for node ${node.name || `Node ${index}`}`);
                 }
             });
             
+            // Also check if we can access the raw glTF data from the scene
+            console.log('=== Scene-level data check ===');
+            if (scene.metadata) {
+                console.log('Scene metadata:', scene.metadata);
+                if (scene.metadata.gltf) {
+                    console.log('Scene glTF data:', scene.metadata.gltf);
+                }
+            }
+            
             if (!foundExtras) {
                 extrasContainer.innerHTML += '<p>No extras data found in the loaded glTF file.</p>';
+                extrasContainer.innerHTML += '<p><em>Check browser console for detailed metadata dump</em></p>';
+            } else {
+                console.log(`Successfully displayed extras data for ${foundExtras} objects`);
             }
         }
 
