@@ -1,0 +1,105 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    upAxis = "Y"
+    metersPerUnit = 1.0
+    customLayerData = {
+        dictionary bindings = {
+            string baseScene = "cube"
+            dictionary telemetryBindings = {
+                dictionary "BaseSphere" = {
+                    string[] topics = ["sensors/room1/temperature", "sensors/room1/pressure"]
+                    dictionary visualProperties = {
+                        string "sensors/room1/temperature" = "color:temperature_to_color"
+                        string "sensors/room1/pressure" = "scale:pressure_to_scale"
+                    }
+                }
+                dictionary "BaseCube" = {
+                    string[] topics = ["sensors/room2/vibration"]
+                    dictionary visualProperties = {
+                        string "sensors/room2/vibration" = "rotation:vibration_to_rotation"
+                    }
+                }
+                dictionary "CubeMesh" = {
+                    string[] topics = ["sensors/room3/temperature"]
+                    dictionary visualProperties = {
+                        string "sensors/room3/temperature" = "color:temperature_to_color"
+                    }
+                }
+            }
+        }
+    }
+)
+
+def Xform "Root" {
+    
+    def Sphere "BaseSphere" {
+        double radius = 1
+        float3 xformOp:translate = (-2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        color3f[] displayColor = [(0.2, 0.6, 1.0)]
+        
+        # Custom attributes for telemetry binding
+        custom string telemetry:binding = "temperature_sensor"
+        custom string[] telemetry:topics = ["sensors/room1/temperature", "sensors/room1/pressure"]
+    }
+    
+    def Cube "BaseCube" (
+        customData = {
+            string myTag = "cube_v1"
+            float myValue = 42.0
+            dictionary bindings = {
+                dictionary cube = {
+                    string meshName = "BaseCube"
+                    string property = "material.baseColor"
+                    string endpoint = "/api/device/cube/temperature"
+                    dictionary query = {
+                        string unit = "celsius"
+                    }
+                    string filter = "$.sensors.temperature.value"
+                    dictionary mapping = {
+                        string type = "temperature_to_color"
+                        dictionary range = {
+                            float min = 20
+                            float max = 80
+                        }
+                        dictionary colors = {
+                            string cold = "#0000FF"
+                            string hot = "#FF0000"
+                        }
+                    }
+                }
+            }
+        }
+    )
+    {
+        double size = 1
+        float3 xformOp:translate = (2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        color3f[] displayColor = [(1.0, 0.2, 0.2)]
+        
+        # Custom attributes for telemetry binding
+        custom string telemetry:binding = "vibration_sensor"
+        custom string[] telemetry:topics = ["sensors/room2/vibration"]
+    }
+    
+    # Detailed mesh geometry for the cube
+    def Mesh "CubeMesh" {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0, 1, 7, 5, 3, 6, 0, 2, 4]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0)]
+        point3f[] points = [(-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (-0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5), (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5)]
+        uniform token subdivisionScheme = "none"
+        float2[] primvars:st = [(0, 0), (1, 0), (0, 1), (1, 1), (0, 1), (1, 1), (0, 0), (1, 0), (0, 1), (1, 1), (0, 0), (1, 0), (0, 0), (1, 0), (0, 1), (1, 1), (0, 0), (1, 0), (0, 1), (1, 1), (0, 0), (1, 0), (0, 1), (1, 1)] (
+            interpolation = "faceVarying"
+        )
+        uniform token[] primvars:st:indices = None
+        color3f[] displayColor = [(0.5, 0.5, 1.0)]
+        float3 xformOp:translate = (0, 2, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        
+        # Custom attributes for telemetry binding
+        custom string telemetry:binding = "temperature_sensor_detailed"
+        custom string[] telemetry:topics = ["sensors/room3/temperature"]
+    }
+}

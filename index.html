@@ -1,20 +1,35 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8" />
-    <title>Babylon.js Dynamic USD Payload Demo</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic USD Payloads with Babylon.js</title>
     <style>
-        html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-        #renderCanvas { width: 100vw; height: 90vh; display: block; }
-        #controls { margin: 10px; }
+        body { margin: 0; font-family: Arial, sans-serif; }
+        #controls { padding: 10px; background-color: #f0f0f0; }
+        #renderCanvas { width: 100%; height: 500px; display: block; }
+        #extrasData { padding: 20px; background-color: #f0f0f0; margin-top: 10px; max-height: 300px; overflow-y: auto; }
     </style>
 </head>
 <body>
     <div id="controls">
-        <button onclick="updateACStatus('baseScene')">Load Base Scene</button>
-        <button onclick="updateACStatus('cube')">Load Cube</button>
+        <div>
+            <label>Select USD Scene: </label>
+            <select id="sceneSelector">
+                <option value="">Loading scenes...</option>
+            </select>
+            <button onclick="loadSelectedScene()">Load Scene</button>
+        </div>
+        <br>
+        <div>
+            <strong>Note:</strong> USD files are converted to glTF and stored in Assets/ folder, then loaded into Babylon.js
+        </div>
     </div>
     <canvas id="renderCanvas"></canvas>
+    <div id="extrasData" style="padding: 20px; background-color: #f0f0f0; margin-top: 10px; max-height: 300px; overflow-y: auto;">
+        <h3>glTF Extras Data:</h3>
+        <p>Load a scene to see extras data here...</p>
+    </div>
     <script src="https://cdn.babylonjs.com/babylon.js"></script>
     <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
     <script>
@@ -22,56 +37,139 @@
         const engine = new BABYLON.Engine(canvas, true);
         let scene;
 
+        // Initialize scene and load available USD files
         async function createScene() {
             scene = new BABYLON.Scene(engine);
             const camera = new BABYLON.ArcRotateCamera("Camera", Math.PI / 2, Math.PI / 2.5, 10, BABYLON.Vector3.Zero(), scene);
             camera.attachControl(canvas, true);
             const light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
 
-            // Load baseScene.usd at startup
-            try {
-                BABYLON.SceneLoader.Append("Scenes/", "baseScene.glb", scene, () => {
-                    console.log("Loaded baseScene.glb");
-                }, null, (scene, message) => {
-                    console.error("Error loading baseScene.glb:", message);
-                });
-            } catch (err) {
-                console.log("baseScene.glb not found, starting with empty scene");
-            }
+            // Load available scenes for dropdown
+            await loadAvailableScenes();
 
             return scene;
         }
 
-        // Convert USD to GLB before loading, then load GLB dynamically
-        async function updateACStatus(id) {
+        // Load available USD scenes from server
+        async function loadAvailableScenes() {
             try {
-                // 1. Request device info (get payloadPath)
-                const res = await fetch(`http://localhost:3000/device/${id}`);
-                const data = await res.json();
-                const payloadPathUsd = data.payloadPath; // input usd file
-                const payloadPathGlb = data.payloadPath.replace('.usd', '.glb'); // output glb file
-
-                // 2. Request conversion from USD to GLB
-                const convertRes = await fetch(`http://localhost:3000/convert?input=${payloadPathUsd}&output=${payloadPathGlb}`);
-                const convertData = await convertRes.json();
-
-                if (!convertData.success) {
-                    console.error('Conversion failed:', convertData.error);
-                    return;
+                const response = await fetch('http://localhost:3000/scenes');
+                const data = await response.json();
+                
+                const selector = document.getElementById('sceneSelector');
+                selector.innerHTML = '';
+                
+                if (data.success && data.files.length > 0) {
+                    data.files.forEach(file => {
+                        const option = document.createElement('option');
+                        option.value = file;
+                        option.textContent = file;
+                        selector.appendChild(option);
+                    });
+                } else {
+                    const option = document.createElement('option');
+                    option.value = '';
+                    option.textContent = 'No USD files found';
+                    selector.appendChild(option);
                 }
-
-                // 3. Load the converted GLB into scene
-                BABYLON.SceneLoader.Append("Scenes/", payloadPathGlb, scene, () => {
-                    console.log(`Loaded payload: ${payloadPathGlb}`);
-                }, null, (scene, message) => {
-                    console.error(`Error loading payload ${payloadPathGlb}:`, message);
-                });
-
-            } catch (err) {
-                console.error('Error in updateACStatus:', err);
+            } catch (error) {
+                console.error('Error loading available scenes:', error);
+                const selector = document.getElementById('sceneSelector');
+                selector.innerHTML = '<option value="">Error loading scenes</option>';
             }
         }
 
+        // Load selected scene
+        async function loadSelectedScene() {
+            const selector = document.getElementById('sceneSelector');
+            const selectedFile = selector.value;
+            
+            if (!selectedFile) {
+                alert('Please select a USD file to load');
+                return;
+            }
+            
+            try {
+                console.log(`Loading scene: ${selectedFile}`);
+                
+                // Clear existing scene content (keep camera and lights)
+                scene.meshes.slice().forEach(mesh => {
+                    if (mesh.name !== 'camera' && !mesh.name.includes('light')) {
+                        mesh.dispose();
+                    }
+                });
+                
+                // Convert USD file to glTF
+                const gltfFilename = selectedFile.replace(/\.(usda|usd)$/, '.glb');
+                console.log(`Converting ${selectedFile} to ${gltfFilename}`);
+                
+                const convertResponse = await fetch(`http://localhost:3000/convert/gltf?input=${selectedFile}&output=${gltfFilename}`);
+                const convertData = await convertResponse.json();
+                
+                if (!convertData.success) {
+                    throw new Error(convertData.error || 'Conversion failed');
+                }
+                
+                console.log(`Conversion successful: ${convertData.outputPath}`);
+                
+                // Load the converted glTF file
+                await loadGltfWithExtras(`http://localhost:3000/Scenes/Assets/`, gltfFilename);
+                
+            } catch (error) {
+                console.error('Error loading scene:', error);
+                alert(`Error loading scene: ${error.message}`);
+            }
+        }
+
+        // Load glTF and display extras data
+        async function loadGltfWithExtras(rootUrl, sceneFilename) {
+            return new Promise((resolve, reject) => {
+                BABYLON.SceneLoader.ImportMesh("", rootUrl, sceneFilename, scene, (meshes, particleSystems, skeletons, animationGroups) => {
+                    console.log(`Successfully loaded glTF: ${sceneFilename}`);
+                    
+                    // Display extras data from glTF
+                    displayExtrasData(meshes);
+                    
+                    resolve({ meshes, particleSystems, skeletons, animationGroups });
+                }, null, (scene, message, exception) => {
+                    console.error(`Error loading ${sceneFilename}:`, message, exception);
+                    reject(new Error(message));
+                });
+            });
+        }
+
+        // Display extras data from loaded glTF meshes
+        function displayExtrasData(meshes) {
+            const extrasContainer = document.getElementById('extrasData');
+            extrasContainer.innerHTML = '<h3>glTF Extras Data:</h3>';
+            
+            let foundExtras = false;
+            
+            meshes.forEach((mesh, index) => {
+                if (mesh.metadata && mesh.metadata.gltf && mesh.metadata.gltf.extras) {
+                    foundExtras = true;
+                    const extrasDiv = document.createElement('div');
+                    extrasDiv.style.marginBottom = '10px';
+                    extrasDiv.style.padding = '10px';
+                    extrasDiv.style.border = '1px solid #ccc';
+                    extrasDiv.style.backgroundColor = '#f9f9f9';
+                    
+                    extrasDiv.innerHTML = `
+                        <h4>Mesh: ${mesh.name || `Mesh ${index}`}</h4>
+                        <pre>${JSON.stringify(mesh.metadata.gltf.extras, null, 2)}</pre>
+                    `;
+                    
+                    extrasContainer.appendChild(extrasDiv);
+                    console.log(`Extras for ${mesh.name}:`, mesh.metadata.gltf.extras);
+                }
+            });
+            
+            if (!foundExtras) {
+                extrasContainer.innerHTML += '<p>No extras data found in the loaded glTF file.</p>';
+            }
+        }
+
+        // Initialize everything
         createScene().then(() => {
             engine.runRenderLoop(() => {
                 if (scene) scene.render();

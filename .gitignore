@@ -39,8 +39,11 @@ env.bak/
 # Generated Files
 *.glb
 *.gltf
+*.usdz
+Scenes/Assets/
 Scenes/*.glb
 Scenes/*.gltf
+Scenes/*.usdz
 
 # IDE & Editor Files
 .vscode/
